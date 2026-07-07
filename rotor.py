@@ -34,7 +34,7 @@ def _send(s, cmd):
 
 def get_azimuth(s):
     resp = _send(s, "C")
-    # Svar: +0153  (grader utan decimaler)
+    # Reply format: +0153  (degrees, no decimals)
     resp = resp.strip().lstrip("+")
     return int(resp)
 
@@ -62,28 +62,28 @@ if __name__ == "__main__":
 
     if len(sys.argv) == 1:
         az = get_azimuth(s)
-        print(f"Aktuell bäring: {az}°")
+        print(f"Current bearing: {az}°")
 
     elif sys.argv[1] == "goto" and len(sys.argv) == 3:
         target = int(sys.argv[2])
-        print(f"Roterar till {target}°...")
+        print(f"Rotating to {target}°...")
         goto(s, target)
         while True:
             az = get_azimuth(s)
             print(f"  {az}°", end="\r")
             if abs(az - target) <= 2:
-                print(f"\nFramme: {az}°")
+                print(f"\nArrived: {az}°")
                 break
             time.sleep(1)
 
     elif sys.argv[1] == "stop":
         stop(s)
-        print("Stopp skickat.")
+        print("Stop command sent.")
 
     else:
-        print("Användning:")
-        print("  python rotor.py              # läs av bäring")
-        print("  python rotor.py goto <grader> # rotera till heading")
-        print("  python rotor.py stop          # stoppa rotation")
+        print("Usage:")
+        print("  python rotor.py               # read current bearing")
+        print("  python rotor.py goto <degrees> # rotate to heading")
+        print("  python rotor.py stop           # stop rotation")
 
     s.close()

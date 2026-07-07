@@ -13,6 +13,14 @@ A lightweight Windows GUI for controlling a **WRC Wi-Fi Rotor Controller** (GS-2
 - Configurable rotor IP, port, UDP listen port, and window size — no source edits needed
 - Also ships as a standalone CLI script (`rotor.py`) for scripted control
 
+## Usage
+
+Click anywhere on the compass dial to send the rotor to that heading. Click the red square in the center to stop. That's it — no menus, no setup beyond the ⚙ settings icon.
+
+## Compatibility
+
+Since the rotor is controlled over the standard **GS-232 protocol**, this should also work with other rotor controllers that speak GS-232 over TCP, not just the WRC unit — the IP/port are fully configurable.
+
 ## Requirements
 
 - Windows (tested) — should run anywhere Python + Tkinter is available
