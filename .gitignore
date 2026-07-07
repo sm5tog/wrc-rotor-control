@@ -1,0 +1,6 @@
+build/
+dist/
+__pycache__/
+rotor_settings.json
+refs/
+CLAUDE.md
