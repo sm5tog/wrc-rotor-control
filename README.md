@@ -48,7 +48,7 @@ Uses the same `rotor_settings.json` as the GUI, if present.
 pyinstaller rotor.spec
 ```
 
-Output goes to `dist/rotor.exe`.
+Output goes to `dist/SM5K-Rotor.exe`.
 
 ## Support this project
 
