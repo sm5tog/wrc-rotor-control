@@ -127,9 +127,10 @@ class Rotor:
 # DXLab Suite uses the same format.
 
 class UDPListener:
-    def __init__(self, port, on_bearing):
+    def __init__(self, port, on_bearing, on_stop=None):
         self.port = port
         self.on_bearing = on_bearing   # callback(float)
+        self.on_stop = on_stop         # callback()
         self._sock = None
         self._thread = None
         self._running = False
@@ -179,6 +180,11 @@ class UDPListener:
             root = ET.fromstring(text)
             # Log4OM / PstRotator: <PST><AZIMUTH>161</AZIMUTH></PST>
             # N1MM / DXLab:        <N1MMRotator><bearing>270.0</bearing>…
+            # PstRotator stop:     <PST><STOP>1</STOP></PST>
+            stop_el = root.find("STOP")
+            if stop_el is not None and self.on_stop is not None:
+                self.on_stop()
+                return
             for tag in ("AZIMUTH", "bearing", "Bearing"):
                 el = root.find(tag)
                 if el is not None:
@@ -288,7 +294,7 @@ class RotorApp(tk.Tk):
         self._stall_count = 0         # polls with no movement
         self._correction_count = 0    # corrections sent for current target
 
-        self._udp = UDPListener(self._cfg["udp_port"], self._on_udp_bearing)
+        self._udp = UDPListener(self._cfg["udp_port"], self._on_udp_bearing, self._on_udp_stop)
         self._udp.start()
 
         self._build_ui()
@@ -488,6 +494,10 @@ class RotorApp(tk.Tk):
     def _apply_udp_bearing(self, bearing):
         self.lbl_n1mm.config(text=f"N1MM: {int(bearing)}°", fg=AMBER)
         self._set_target(bearing)
+
+    def _on_udp_stop(self):
+        # Called from UDP thread — schedule on main thread
+        self.after(0, self._stop)
 
     # ── Poll ──────────────────────────────────────────────
 
