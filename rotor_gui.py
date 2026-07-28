@@ -22,8 +22,8 @@ CONFIG_FILE = os.path.join(_BASE_DIR, "rotor_settings.json")
 DEFAULT_HOST     = "192.168.1.1"
 DEFAULT_PORT     = 23
 DEFAULT_UDP_PORT = 12040
-DEFAULT_SIZE     = 460
-MIN_SIZE = 300
+DEFAULT_SIZE     = 153
+MIN_SIZE = 120
 MAX_SIZE = 700
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
 
@@ -284,6 +284,7 @@ class RotorApp(tk.Tk):
         self.title("SM5K WRC Rotator Control")
         self.configure(bg=BG)
         self.resizable(False, False)
+        self.overrideredirect(True)     # borderless – total height == compass size
 
         self._cfg = load_settings()
         self.rotor = Rotor(self._cfg["host"], self._cfg["port"])
@@ -314,31 +315,18 @@ class RotorApp(tk.Tk):
     # ── Layout ────────────────────────────────────────────
 
     def _build_ui(self):
-        # Topbar
-        bar = tk.Frame(self, bg=BORDER)
-        bar.pack(fill="x")
-
-        self.lbl_conn = tk.Label(bar, text="Rotor: ---", bg=BORDER, fg=MUTED,
-                                 font=("Consolas", 9), anchor="w")
-        self.lbl_conn.pack(side="left", padx=6, pady=3)
-
-        self.lbl_n1mm = tk.Label(bar, text="N1MM: ---", bg=BORDER, fg=MUTED,
-                                 font=("Consolas", 9), anchor="w")
-        self.lbl_n1mm.pack(side="left", padx=6, pady=3)
-
-        cfg_btn = tk.Button(bar, text="⚙", bg=BORDER, fg=MUTED,
-                            activebackground=BORDER, activeforeground=TEXT,
-                            relief="flat", font=("Consolas", 12),
-                            cursor="hand2", bd=0,
-                            command=self._open_settings)
-        cfg_btn.pack(side="right", padx=8, pady=2)
-
-        # Canvas
+        # No topbar – the window is just the compass. Settings live on right-click,
+        # and a connected rotor shows itself through the green azimuth readout.
         C = self._canvas_size
         self.canvas = tk.Canvas(self, width=C, height=C, bg=BG,
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack()
-        self.canvas.bind("<Button-1>", self._on_click)
+        # Left button: press/drag/release – a plain click sets the target,
+        # a drag past the threshold moves the borderless window instead.
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<Button-3>", self._on_right_click)
 
         self._draw_static()
 
@@ -379,30 +367,12 @@ class RotorApp(tk.Tk):
                                     cx + c * outer, cy + s * outer,
                                     fill=color, width=w)
 
-        lbl_r = inner_maj - int(R * 0.12)
-        for deg, lbl in {0: "N", 90: "E", 180: "S", 270: "W"}.items():
-            rad = math.radians(deg - 90)
-            self.canvas.create_text(cx + math.cos(rad) * lbl_r,
-                                    cy + math.sin(rad) * lbl_r,
-                                    text=lbl, fill=TEXT,
-                                    font=("Consolas", max(8, R // 14), "bold"))
-
-        deg_r = inner_maj - int(R * 0.09)
-        cardinals = {0, 90, 180, 270}
-        fsz = max(7, R // 20)
-        for deg in range(0, 360, 30):
-            if deg in cardinals:
-                continue
-            rad = math.radians(deg - 90)
-            self.canvas.create_text(cx + math.cos(rad) * deg_r,
-                                    cy + math.sin(rad) * deg_r,
-                                    text=str(deg), fill=MUTED,
-                                    font=("Consolas", fsz))
-
         sr = self._stop_r
         self.stop_circle = self.canvas.create_oval(
             cx - sr, cy - sr, cx + sr, cy + sr,
             fill="#2a1a1a", outline="#5a2020", width=1)
+        # (degree numbers intentionally omitted – only the actual/target
+        #  readouts carry the values now)
         self.stop_label = self.canvas.create_text(
             cx, cy, text="■", fill="#5a2020",
             font=("Consolas", max(9, sr - 6), "bold"))
@@ -436,8 +406,8 @@ class RotorApp(tk.Tk):
 
         cx = cy = self._cx
         R = self._radius
-        fsz_az  = max(12, R // 8)
-        fsz_tgt = max(10, R // 11)
+        fsz_az  = max(10, R // 9)
+        fsz_tgt = max(8, R // 13)
 
         if self.az_target is not None:
             self.needle_target = self._needle(self.az_target, AMBER, 0.74, 2)
@@ -445,13 +415,13 @@ class RotorApp(tk.Tk):
         if self.az_actual is not None:
             self.needle_actual = self._needle(self.az_actual, GREEN, 0.87, max(3, R // 50))
             self.label_actual_deg = self.canvas.create_text(
-                cx, cy + R * 0.48,
+                cx, cy + R * 0.27,
                 text=f"{int(self.az_actual)}°",
                 fill=GREEN, font=("Consolas", fsz_az, "bold"))
 
         if self.az_target is not None:
             self.label_target_deg = self.canvas.create_text(
-                cx, cy + R * 0.63,
+                cx, cy + R * 0.42,
                 text=f"→ {int(self.az_target)}°",
                 fill=AMBER, font=("Consolas", fsz_tgt))
 
@@ -460,16 +430,45 @@ class RotorApp(tk.Tk):
 
     # ── Mouse click ───────────────────────────────────────
 
-    def _on_click(self, event):
+    def _on_press(self, event):
+        self._drag_origin = (event.x_root, event.y_root)
+        self._win_origin  = (self.winfo_x(), self.winfo_y())
+        self._moved = False
+
+    def _on_drag(self, event):
+        dx = event.x_root - self._drag_origin[0]
+        dy = event.y_root - self._drag_origin[1]
+        if abs(dx) > 5 or abs(dy) > 5:
+            self._moved = True
+        if self._moved:
+            self.geometry(f"+{self._win_origin[0] + dx}+{self._win_origin[1] + dy}")
+
+    def _on_release(self, event):
+        # A plain click (no meaningful drag) counts as a target/stop action.
+        if not self._moved:
+            self._handle_click(event.x, event.y)
+
+    def _handle_click(self, x, y):
         cx = cy = self._cx
-        dist = math.hypot(event.x - cx, event.y - cy)
+        dist = math.hypot(x - cx, y - cy)
         if dist <= self._stop_r:
             self._stop()
             return
         if dist > self._radius + 10:
             return
-        angle = (math.degrees(math.atan2(event.y - cy, event.x - cx)) + 90) % 360
+        angle = (math.degrees(math.atan2(y - cy, x - cx)) + 90) % 360
         self._set_target(angle)
+
+    def _on_right_click(self, event):
+        menu = tk.Menu(self, tearoff=0, bg=PANEL, fg=TEXT,
+                       activebackground=BORDER, activeforeground=TEXT, bd=0)
+        menu.add_command(label="Settings…", command=self._open_settings)
+        menu.add_separator()
+        menu.add_command(label="Avsluta", command=self.destroy)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     # ── Target / stop ─────────────────────────────────────
 
@@ -492,7 +491,6 @@ class RotorApp(tk.Tk):
         self.after(0, self._apply_udp_bearing, bearing)
 
     def _apply_udp_bearing(self, bearing):
-        self.lbl_n1mm.config(text=f"N1MM: {int(bearing)}°", fg=AMBER)
         self._set_target(bearing)
 
     def _on_udp_stop(self):
@@ -510,7 +508,6 @@ class RotorApp(tk.Tk):
     def _on_poll_result(self, az):
         if az is not None:
             self.az_actual = az
-            self.lbl_conn.config(text="Rotor: connected", fg=GREEN)
 
             if self.az_target is not None:
                 error = abs(az - self.az_target)
@@ -519,7 +516,6 @@ class RotorApp(tk.Tk):
                     self.az_target = None
                     self._stall_count = 0
                     self._correction_count = 0
-                    self.lbl_n1mm.config(text="N1MM: ---", fg=MUTED)
                 else:
                     # Track stall: no movement (<1°) since last poll
                     if self._az_prev is not None and abs(az - self._az_prev) < 1:
@@ -535,7 +531,9 @@ class RotorApp(tk.Tk):
 
             self._az_prev = az
         else:
-            self.lbl_conn.config(text="Rotor: no connection", fg=RED)
+            # No reply from the rotor: clear the reading so the green azimuth
+            # disappears – absence of the green value is the "not connected" cue.
+            self.az_actual = None
 
         self._update_canvas()
         self.after(300, self._poll)
