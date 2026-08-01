@@ -8,7 +8,7 @@ A lightweight Windows GUI for controlling a **WRC Wi-Fi Rotor Controller** (GS-2
 
 - Compass-style GUI — click anywhere on the dial to set a target heading, click the center to stop
 - Live rotor connection status
-- Listens for UDP bearing packets from N1MM / Log4OM / DXLab (auto-rotate on band/spot changes), and honors stop packets from PstRotator-compatible software
+- Listens for UDP bearing packets from N1MM / Log4OM / DXLab (auto-rotate on band/spot changes), and honors stop packets from PstRotator-compatible software — see [logging software setup guide](README_ROTOR.md)
 - Automatic stall detection and correction if the rotor overshoots or gets stuck
 - Configurable rotor IP, port, UDP listen port, and window size — no source edits needed
 - Also ships as a standalone CLI script (`rotor.py`) for scripted control

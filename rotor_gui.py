@@ -26,6 +26,7 @@ DEFAULT_SIZE     = 153
 MIN_SIZE = 120
 MAX_SIZE = 700
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
+HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/main/README_ROTOR.md"
 
 # ── Palette ────────────────────────────────────────────────
 BG     = "#16181d"
@@ -248,6 +249,14 @@ class SettingsDialog(tk.Toplevel):
         donate.bind("<Enter>", lambda e: donate.config(fg=AMBER))
         donate.bind("<Leave>", lambda e: donate.config(fg=MUTED))
 
+        help_lbl = tk.Label(self, text="? Help / logging software setup",
+                          bg=BG, fg=MUTED, font=("Consolas", 9, "underline"),
+                          cursor="hand2")
+        help_lbl.pack(pady=(0, 14))
+        help_lbl.bind("<Button-1>", lambda e: webbrowser.open(HELP_URL))
+        help_lbl.bind("<Enter>", lambda e: help_lbl.config(fg=AMBER))
+        help_lbl.bind("<Leave>", lambda e: help_lbl.config(fg=MUTED))
+
     def _apply(self):
         host = self.e_host.get().strip()
         try:
@@ -463,6 +472,7 @@ class RotorApp(tk.Tk):
         menu = tk.Menu(self, tearoff=0, bg=PANEL, fg=TEXT,
                        activebackground=BORDER, activeforeground=TEXT, bd=0)
         menu.add_command(label="Settings…", command=self._open_settings)
+        menu.add_command(label="Help / logging software setup", command=lambda: webbrowser.open(HELP_URL))
         menu.add_separator()
         menu.add_command(label="Avsluta", command=self.destroy)
         try:
