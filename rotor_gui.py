@@ -29,7 +29,7 @@ SIZE_BY_MODE = {
 }
 MAX_SIZE = 700
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
-HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/main/README_ROTOR.md"
+HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/master/README_ROTOR.md"
 
 # ── Palette ────────────────────────────────────────────────
 BG     = "#16181d"
