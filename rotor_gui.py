@@ -22,8 +22,11 @@ CONFIG_FILE = os.path.join(_BASE_DIR, "rotor_settings.json")
 DEFAULT_HOST     = "192.168.1.1"
 DEFAULT_PORT     = 23
 DEFAULT_UDP_PORT = 12040
-DEFAULT_SIZE     = 153
-MIN_SIZE = 120
+DEFAULT_UI_MODE  = "classic"          # "classic" (windowed, for most users) or "compact" (borderless companion)
+SIZE_BY_MODE = {
+    "classic": {"default": 460, "min": 300},
+    "compact": {"default": 153, "min": 120},
+}
 MAX_SIZE = 700
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
 HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/main/README_ROTOR.md"
@@ -45,15 +48,20 @@ def load_settings():
     try:
         with open(CONFIG_FILE) as f:
             d = json.load(f)
+            ui_mode = d.get("ui_mode", DEFAULT_UI_MODE)
+            if ui_mode not in SIZE_BY_MODE:
+                ui_mode = DEFAULT_UI_MODE
             return {
                 "host":     d.get("host",     DEFAULT_HOST),
                 "port":     int(d.get("port",     DEFAULT_PORT)),
                 "udp_port": int(d.get("udp_port", DEFAULT_UDP_PORT)),
-                "size":     int(d.get("size",     DEFAULT_SIZE)),
+                "ui_mode":  ui_mode,
+                "size":     int(d.get("size", SIZE_BY_MODE[ui_mode]["default"])),
             }
     except Exception:
         return {"host": DEFAULT_HOST, "port": DEFAULT_PORT,
-                "udp_port": DEFAULT_UDP_PORT, "size": DEFAULT_SIZE}
+                "udp_port": DEFAULT_UDP_PORT, "ui_mode": DEFAULT_UI_MODE,
+                "size": SIZE_BY_MODE[DEFAULT_UI_MODE]["default"]}
 
 def save_settings(s):
     with open(CONFIG_FILE, "w") as f:
@@ -205,6 +213,7 @@ class SettingsDialog(tk.Toplevel):
         self.resizable(False, False)
         self.grab_set()
         self.on_apply = on_apply
+        self.ui_mode = cfg["ui_mode"]
 
         def row(label, default):
             tk.Label(self, text=label, bg=BG, fg=MUTED,
@@ -217,10 +226,25 @@ class SettingsDialog(tk.Toplevel):
             e.pack(fill="x", padx=20, ipady=4)
             return e
 
+        tk.Label(self, text="Window style", bg=BG, fg=MUTED,
+                 font=("Consolas", 10), anchor="w").pack(fill="x", padx=20, pady=(12, 2))
+        mode_row = tk.Frame(self, bg=BG)
+        mode_row.pack(fill="x", padx=20)
+        self.mode_buttons = {}
+        for mode, label in (("classic", "Classic (windowed)"), ("compact", "Compact (borderless)")):
+            b = tk.Button(mode_row, text=label,
+                          font=("Consolas", 9, "bold"), relief="flat", bd=0,
+                          padx=8, pady=6, cursor="hand2",
+                          command=lambda m=mode: self._select_mode(m))
+            b.pack(side="left", expand=True, fill="x", padx=(0, 6) if mode == "classic" else 0)
+            self.mode_buttons[mode] = b
+        self._select_mode(self.ui_mode)
+
         self.e_host     = row("Rotor IP address",            cfg["host"])
         self.e_port     = row("Rotor TCP port",              cfg["port"])
         self.e_udp_port = row("N1MM UDP listen port",        cfg["udp_port"])
-        self.e_size     = row(f"Compass size ({MIN_SIZE}–{MAX_SIZE} px)", cfg["size"])
+        self.e_size     = row(f"Compass size ({SIZE_BY_MODE[self.ui_mode]['min']}–{MAX_SIZE} px)", cfg["size"])
+        self.lbl_size_hint = self.e_size
 
         self.lbl_status = tk.Label(self, text="", bg=BG, fg=MUTED,
                                    font=("Consolas", 10))
@@ -244,7 +268,7 @@ class SettingsDialog(tk.Toplevel):
         donate = tk.Label(self, text="♥ Support this project (PayPal)",
                           bg=BG, fg=MUTED, font=("Consolas", 9, "underline"),
                           cursor="hand2")
-        donate.pack(pady=(0, 14))
+        donate.pack(pady=(0, 4))
         donate.bind("<Button-1>", lambda e: webbrowser.open(DONATE_URL))
         donate.bind("<Enter>", lambda e: donate.config(fg=AMBER))
         donate.bind("<Leave>", lambda e: donate.config(fg=MUTED))
@@ -257,12 +281,31 @@ class SettingsDialog(tk.Toplevel):
         help_lbl.bind("<Enter>", lambda e: help_lbl.config(fg=AMBER))
         help_lbl.bind("<Leave>", lambda e: help_lbl.config(fg=MUTED))
 
+    def _select_mode(self, mode):
+        self.ui_mode = mode
+        for m, b in self.mode_buttons.items():
+            selected = (m == mode)
+            b.config(bg=AMBER if selected else BTNBG,
+                     fg=BG if selected else TEXT,
+                     activebackground=AMBER if selected else BORDER)
+        if hasattr(self, "lbl_size_hint"):
+            # Nudge the size field toward the new mode's default if it's below its minimum
+            try:
+                cur = int(self.e_size.get().strip())
+            except ValueError:
+                cur = 0
+            min_for_mode = SIZE_BY_MODE[mode]["min"]
+            if cur < min_for_mode:
+                self.e_size.delete(0, "end")
+                self.e_size.insert(0, str(SIZE_BY_MODE[mode]["default"]))
+
     def _apply(self):
         host = self.e_host.get().strip()
         try:
             port     = int(self.e_port.get().strip())
             udp_port = int(self.e_udp_port.get().strip())
-            size     = max(MIN_SIZE, min(MAX_SIZE, int(self.e_size.get().strip())))
+            min_size = SIZE_BY_MODE[self.ui_mode]["min"]
+            size     = max(min_size, min(MAX_SIZE, int(self.e_size.get().strip())))
         except ValueError:
             self.lbl_status.config(text="Invalid value.", fg=RED)
             return
@@ -270,7 +313,8 @@ class SettingsDialog(tk.Toplevel):
         self.update_idletasks()
         threading.Thread(
             target=lambda: self.on_apply(
-                {"host": host, "port": port, "udp_port": udp_port, "size": size},
+                {"host": host, "port": port, "udp_port": udp_port,
+                 "ui_mode": self.ui_mode, "size": size},
                 self._on_result),
             daemon=True).start()
 
@@ -293,7 +337,6 @@ class RotorApp(tk.Tk):
         self.title("SM5K WRC Rotator Control")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.overrideredirect(True)     # borderless – total height == compass size
 
         self._cfg = load_settings()
         self.rotor = Rotor(self._cfg["host"], self._cfg["port"])
@@ -303,15 +346,20 @@ class RotorApp(tk.Tk):
         self._az_prev = None          # last reading, for stall detection
         self._stall_count = 0         # polls with no movement
         self._correction_count = 0    # corrections sent for current target
+        self.lbl_conn = None
+        self.lbl_n1mm = None
 
         self._udp = UDPListener(self._cfg["udp_port"], self._on_udp_bearing, self._on_udp_stop)
         self._udp.start()
 
+        self._apply_window_style()
         self._build_ui()
         self._poll()
 
     # ── Geometry ──────────────────────────────────────────
 
+    @property
+    def _is_compact(self): return self._cfg["ui_mode"] == "compact"
     @property
     def _cx(self): return self._canvas_size // 2
     @property
@@ -321,17 +369,47 @@ class RotorApp(tk.Tk):
     @property
     def _stop_r(self): return max(18, int(self._radius * self.STOP_R_FRAC))
 
+    # ── Window chrome ─────────────────────────────────────
+
+    def _apply_window_style(self):
+        # Borderless in compact mode (companion-window style); normal titlebar
+        # in classic mode so it behaves like an ordinary desktop app.
+        self.overrideredirect(self._is_compact)
+
     # ── Layout ────────────────────────────────────────────
 
     def _build_ui(self):
-        # No topbar – the window is just the compass. Settings live on right-click,
-        # and a connected rotor shows itself through the green azimuth readout.
+        for w in self.winfo_children():
+            w.destroy()
+
+        if not self._is_compact:
+            bar = tk.Frame(self, bg=BORDER)
+            bar.pack(fill="x")
+
+            self.lbl_conn = tk.Label(bar, text="Rotor: ---", bg=BORDER, fg=MUTED,
+                                     font=("Consolas", 9), anchor="w")
+            self.lbl_conn.pack(side="left", padx=6, pady=3)
+
+            self.lbl_n1mm = tk.Label(bar, text="N1MM: ---", bg=BORDER, fg=MUTED,
+                                     font=("Consolas", 9), anchor="w")
+            self.lbl_n1mm.pack(side="left", padx=6, pady=3)
+
+            cfg_btn = tk.Button(bar, text="⚙", bg=BORDER, fg=MUTED,
+                                activebackground=BORDER, activeforeground=TEXT,
+                                relief="flat", font=("Consolas", 12),
+                                cursor="hand2", bd=0,
+                                command=self._open_settings)
+            cfg_btn.pack(side="right", padx=8, pady=2)
+        else:
+            self.lbl_conn = None
+            self.lbl_n1mm = None
+
         C = self._canvas_size
         self.canvas = tk.Canvas(self, width=C, height=C, bg=BG,
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack()
-        # Left button: press/drag/release – a plain click sets the target,
-        # a drag past the threshold moves the borderless window instead.
+        # Left button: press/drag/release – a plain click sets the target;
+        # in compact mode a drag past the threshold moves the borderless window.
         self.canvas.bind("<Button-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
@@ -340,15 +418,11 @@ class RotorApp(tk.Tk):
         self._draw_static()
 
     def _rebuild_canvas(self):
-        C = self._canvas_size
-        self.canvas.config(width=C, height=C)
-        self.canvas.delete("all")
-        self.needle_target = None
-        self.needle_actual = None
-        self.label_actual_deg = None
-        self.label_target_deg = None
-        self._draw_static()
+        self._apply_window_style()
+        self._build_ui()
         self._update_canvas()
+        if self.az_actual is not None and self.lbl_conn is not None:
+            self.lbl_conn.config(text="Rotor: connected", fg=GREEN)
 
     # ── Compass rose ──────────────────────────────────────
 
@@ -376,12 +450,31 @@ class RotorApp(tk.Tk):
                                     cx + c * outer, cy + s * outer,
                                     fill=color, width=w)
 
+        if not self._is_compact:
+            lbl_r = inner_maj - int(R * 0.12)
+            for deg, lbl in {0: "N", 90: "E", 180: "S", 270: "W"}.items():
+                rad = math.radians(deg - 90)
+                self.canvas.create_text(cx + math.cos(rad) * lbl_r,
+                                        cy + math.sin(rad) * lbl_r,
+                                        text=lbl, fill=TEXT,
+                                        font=("Consolas", max(8, R // 14), "bold"))
+
+            deg_r = inner_maj - int(R * 0.09)
+            cardinals = {0, 90, 180, 270}
+            fsz = max(7, R // 20)
+            for deg in range(0, 360, 30):
+                if deg in cardinals:
+                    continue
+                rad = math.radians(deg - 90)
+                self.canvas.create_text(cx + math.cos(rad) * deg_r,
+                                        cy + math.sin(rad) * deg_r,
+                                        text=str(deg), fill=MUTED,
+                                        font=("Consolas", fsz))
+
         sr = self._stop_r
         self.stop_circle = self.canvas.create_oval(
             cx - sr, cy - sr, cx + sr, cy + sr,
             fill="#2a1a1a", outline="#5a2020", width=1)
-        # (degree numbers intentionally omitted – only the actual/target
-        #  readouts carry the values now)
         self.stop_label = self.canvas.create_text(
             cx, cy, text="■", fill="#5a2020",
             font=("Consolas", max(9, sr - 6), "bold"))
@@ -415,8 +508,12 @@ class RotorApp(tk.Tk):
 
         cx = cy = self._cx
         R = self._radius
-        fsz_az  = max(10, R // 9)
-        fsz_tgt = max(8, R // 13)
+        if self._is_compact:
+            fsz_az, fsz_tgt = max(10, R // 9), max(8, R // 13)
+            y_actual, y_target = R * 0.27, R * 0.42
+        else:
+            fsz_az, fsz_tgt = max(12, R // 8), max(10, R // 11)
+            y_actual, y_target = R * 0.48, R * 0.63
 
         if self.az_target is not None:
             self.needle_target = self._needle(self.az_target, AMBER, 0.74, 2)
@@ -424,13 +521,13 @@ class RotorApp(tk.Tk):
         if self.az_actual is not None:
             self.needle_actual = self._needle(self.az_actual, GREEN, 0.87, max(3, R // 50))
             self.label_actual_deg = self.canvas.create_text(
-                cx, cy + R * 0.27,
+                cx, cy + y_actual,
                 text=f"{int(self.az_actual)}°",
                 fill=GREEN, font=("Consolas", fsz_az, "bold"))
 
         if self.az_target is not None:
             self.label_target_deg = self.canvas.create_text(
-                cx, cy + R * 0.42,
+                cx, cy + y_target,
                 text=f"→ {int(self.az_target)}°",
                 fill=AMBER, font=("Consolas", fsz_tgt))
 
@@ -445,6 +542,8 @@ class RotorApp(tk.Tk):
         self._moved = False
 
     def _on_drag(self, event):
+        if not self._is_compact:
+            return  # classic mode has a normal titlebar to drag by
         dx = event.x_root - self._drag_origin[0]
         dy = event.y_root - self._drag_origin[1]
         if abs(dx) > 5 or abs(dy) > 5:
@@ -501,6 +600,8 @@ class RotorApp(tk.Tk):
         self.after(0, self._apply_udp_bearing, bearing)
 
     def _apply_udp_bearing(self, bearing):
+        if self.lbl_n1mm is not None:
+            self.lbl_n1mm.config(text=f"N1MM: {int(bearing)}°", fg=AMBER)
         self._set_target(bearing)
 
     def _on_udp_stop(self):
@@ -518,6 +619,8 @@ class RotorApp(tk.Tk):
     def _on_poll_result(self, az):
         if az is not None:
             self.az_actual = az
+            if self.lbl_conn is not None:
+                self.lbl_conn.config(text="Rotor: connected", fg=GREEN)
 
             if self.az_target is not None:
                 error = abs(az - self.az_target)
@@ -526,6 +629,8 @@ class RotorApp(tk.Tk):
                     self.az_target = None
                     self._stall_count = 0
                     self._correction_count = 0
+                    if self.lbl_n1mm is not None:
+                        self.lbl_n1mm.config(text="N1MM: ---", fg=MUTED)
                 else:
                     # Track stall: no movement (<1°) since last poll
                     if self._az_prev is not None and abs(az - self._az_prev) < 1:
@@ -541,9 +646,12 @@ class RotorApp(tk.Tk):
 
             self._az_prev = az
         else:
-            # No reply from the rotor: clear the reading so the green azimuth
-            # disappears – absence of the green value is the "not connected" cue.
+            # No reply from the rotor: clear the reading. In compact mode the
+            # absence of the green value is the "not connected" cue; in
+            # classic mode the topbar label also switches to red.
             self.az_actual = None
+            if self.lbl_conn is not None:
+                self.lbl_conn.config(text="Rotor: no connection", fg=RED)
 
         self._update_canvas()
         self.after(300, self._poll)
@@ -557,11 +665,18 @@ class RotorApp(tk.Tk):
         ok = self.rotor.reconnect(new_cfg["host"], new_cfg["port"])
         if new_cfg["udp_port"] != self._cfg["udp_port"]:
             self._udp.restart(new_cfg["udp_port"])
+        style_changed = new_cfg["ui_mode"] != self._cfg["ui_mode"]
         self._cfg = new_cfg
         self._canvas_size = new_cfg["size"]
         save_settings(new_cfg)
-        self.after(0, self._rebuild_canvas)
+        self.after(0, self._rebuild_canvas if style_changed else self._resize_only)
         callback(ok)
+
+    def _resize_only(self):
+        self._build_ui()
+        self._update_canvas()
+        if self.az_actual is not None and self.lbl_conn is not None:
+            self.lbl_conn.config(text="Rotor: connected", fg=GREEN)
 
 
 # ── Entry point ───────────────────────────────────────────
