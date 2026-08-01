@@ -37,8 +37,3 @@ exe = EXE(
     entitlements_file=None,
     icon=['compass.ico'],
 )
-
-import shutil, os
-_dst = r"C:\claude\aktiv\rotor"
-os.makedirs(_dst, exist_ok=True)
-shutil.copy(os.path.join(DISTPATH, "SM5K-Rotor.exe"), os.path.join(_dst, "SM5K-Rotor.exe"))
