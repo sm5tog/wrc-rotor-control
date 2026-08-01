@@ -37,8 +37,7 @@ On first run it creates `rotor_settings.json` next to the script with default va
 
 ## Compiled EXE
 
-Pre-built Windows executables are published separately at
-[sm5tog/wrc-rotor-control-releases](https://github.com/sm5tog/wrc-rotor-control-releases) — no Python installation required.
+Pre-built Windows executables are published on the [Releases page](https://github.com/sm5tog/wrc-rotor-control/releases) — no Python installation required.
 
 ## CLI usage
 
