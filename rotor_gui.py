@@ -10,8 +10,12 @@ import math
 import json
 import os
 import sys
+import subprocess
+import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
+
+import win_snap
 
 # Works correctly both as .py script and as PyInstaller EXE / desktop shortcut
 if getattr(sys, 'frozen', False):
@@ -30,6 +34,16 @@ SIZE_BY_MODE = {
 MAX_SIZE = 700
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
 HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/master/README_ROTOR.md"
+
+VERSION = "1.3.0"
+
+# Auto-uppdatering: samma mönster som TCISync/jtspots, releaserna ligger i
+# repots EGEN Releases-flik (sm5tog/wrc-rotor-control), inte i ett separat
+# "-release"-repo.
+UPDATE_REPO      = "sm5tog/wrc-rotor-control"
+UPDATE_CHECK_URL = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
+UPDATE_CHECK_MS  = 60 * 60 * 1000   # en gång i timmen
+UPDATER_NAME     = "RotorUpdater.exe"
 
 # ── Palette ────────────────────────────────────────────────
 BG     = "#16181d"
@@ -57,11 +71,16 @@ def load_settings():
                 "udp_port": int(d.get("udp_port", DEFAULT_UDP_PORT)),
                 "ui_mode":  ui_mode,
                 "size":     int(d.get("size", SIZE_BY_MODE[ui_mode]["default"])),
+                "ontop":    bool(d.get("ontop", True)),
+                "x":        d.get("x"),
+                "y":        d.get("y"),
             }
     except Exception:
         return {"host": DEFAULT_HOST, "port": DEFAULT_PORT,
                 "udp_port": DEFAULT_UDP_PORT, "ui_mode": DEFAULT_UI_MODE,
-                "size": SIZE_BY_MODE[DEFAULT_UI_MODE]["default"]}
+                "size": SIZE_BY_MODE[DEFAULT_UI_MODE]["default"],
+                "ontop": True,
+                "x": None, "y": None}
 
 def save_settings(s):
     with open(CONFIG_FILE, "w") as f:
@@ -214,6 +233,7 @@ class SettingsDialog(tk.Toplevel):
         self.grab_set()
         self.on_apply = on_apply
         self.ui_mode = cfg["ui_mode"]
+        self.var_ontop = tk.BooleanVar(value=cfg.get("ontop", True))
 
         def row(label, default):
             tk.Label(self, text=label, bg=BG, fg=MUTED,
@@ -245,6 +265,13 @@ class SettingsDialog(tk.Toplevel):
         self.e_udp_port = row("N1MM UDP listen port",        cfg["udp_port"])
         self.e_size     = row(f"Compass size ({SIZE_BY_MODE[self.ui_mode]['min']}–{MAX_SIZE} px)", cfg["size"])
         self.lbl_size_hint = self.e_size
+
+        chk = tk.Checkbutton(self, text="Always on top", variable=self.var_ontop,
+                             bg=BG, fg=TEXT, selectcolor=BTNBG,
+                             activebackground=BG, activeforeground=TEXT,
+                             font=("Consolas", 10), anchor="w",
+                             highlightthickness=0, bd=0)
+        chk.pack(fill="x", padx=20, pady=(10, 0))
 
         self.lbl_status = tk.Label(self, text="", bg=BG, fg=MUTED,
                                    font=("Consolas", 10))
@@ -314,7 +341,8 @@ class SettingsDialog(tk.Toplevel):
         threading.Thread(
             target=lambda: self.on_apply(
                 {"host": host, "port": port, "udp_port": udp_port,
-                 "ui_mode": self.ui_mode, "size": size},
+                 "ui_mode": self.ui_mode, "size": size,
+                 "ontop": self.var_ontop.get()},
                 self._on_result),
             daemon=True).start()
 
@@ -334,7 +362,7 @@ class RotorApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("SM5K WRC Rotator Control")
+        self.title("SM5K WRC Rotator Control  v%s" % VERSION)
         self.configure(bg=BG)
         self.resizable(False, False)
 
@@ -354,7 +382,13 @@ class RotorApp(tk.Tk):
 
         self._apply_window_style()
         self._build_ui()
+        if self._cfg.get("x") is not None and self._cfg.get("y") is not None:
+            self.geometry(f"+{self._cfg['x']}+{self._cfg['y']}")
+        self.attributes("-topmost", self._cfg["ontop"])
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll()
+        self._update_available_tag = None
+        self.after(0, self._update_check_tick)
 
     # ── Geometry ──────────────────────────────────────────
 
@@ -400,9 +434,26 @@ class RotorApp(tk.Tk):
                                 cursor="hand2", bd=0,
                                 command=self._open_settings)
             cfg_btn.pack(side="right", padx=8, pady=2)
+
+            self.ontop_btn = tk.Button(bar, text="^",
+                                bg=AMBER if self._cfg["ontop"] else BORDER,
+                                fg=BG if self._cfg["ontop"] else MUTED,
+                                activebackground=BORDER, activeforeground=TEXT,
+                                relief="flat", font=("Consolas", 10, "bold"),
+                                cursor="hand2", bd=0, width=2,
+                                command=self._toggle_ontop)
+            self.ontop_btn.pack(side="right", padx=(8, 0), pady=2)
+
+            self.update_btn = tk.Button(bar, text="", bg=GREEN, fg=BG,
+                                activebackground=GREEN, activeforeground=BG,
+                                relief="flat", font=("Consolas", 9, "bold"),
+                                cursor="hand2", bd=0,
+                                command=self._launch_updater)
         else:
             self.lbl_conn = None
             self.lbl_n1mm = None
+            self.ontop_btn = None
+            self.update_btn = None
 
         C = self._canvas_size
         self.canvas = tk.Canvas(self, width=C, height=C, bg=BG,
@@ -416,6 +467,10 @@ class RotorApp(tk.Tk):
         self.canvas.bind("<Button-3>", self._on_right_click)
 
         self._draw_static()
+
+        if self.update_btn is not None and getattr(self, "_update_available_tag", None):
+            self.update_btn.config(text="Update: %s" % self._update_available_tag)
+            self.update_btn.pack(side="right", padx=(0, 8), pady=2)
 
     def _rebuild_canvas(self):
         self._apply_window_style()
@@ -566,12 +621,19 @@ class RotorApp(tk.Tk):
         if abs(dx) > 5 or abs(dy) > 5:
             self._moved = True
         if self._moved:
-            self.geometry(f"+{self._win_origin[0] + dx}+{self._win_origin[1] + dy}")
+            x = self._win_origin[0] + dx
+            y = self._win_origin[1] + dy
+            x, y = win_snap.snap(self.title(), x, y, self.winfo_width(), self.winfo_height())
+            self.geometry(f"+{x}+{y}")
 
     def _on_release(self, event):
         # A plain click (no meaningful drag) counts as a target/stop action.
         if not self._moved:
             self._handle_click(event.x, event.y)
+        else:
+            self._cfg["x"] = self.winfo_x()
+            self._cfg["y"] = self.winfo_y()
+            save_settings(self._cfg)
 
     def _handle_click(self, x, y):
         cx = cy = self._cx
@@ -590,11 +652,17 @@ class RotorApp(tk.Tk):
         menu.add_command(label="Settings…", command=self._open_settings)
         menu.add_command(label="Help / logging software setup", command=lambda: webbrowser.open(HELP_URL))
         menu.add_separator()
-        menu.add_command(label="Avsluta", command=self.destroy)
+        menu.add_command(label="Avsluta", command=self._on_close)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _on_close(self):
+        self._cfg["x"] = self.winfo_x()
+        self._cfg["y"] = self.winfo_y()
+        save_settings(self._cfg)
+        self.destroy()
 
     # ── Target / stop ─────────────────────────────────────
 
@@ -673,6 +741,69 @@ class RotorApp(tk.Tk):
         self._update_canvas()
         self.after(300, self._poll)
 
+    # ── Ontop ─────────────────────────────────────────────
+
+    def _toggle_ontop(self):
+        self._cfg["ontop"] = not self._cfg["ontop"]
+        self.attributes("-topmost", self._cfg["ontop"])
+        save_settings(self._cfg)
+        if self.ontop_btn is not None:
+            self.ontop_btn.config(
+                bg=AMBER if self._cfg["ontop"] else BORDER,
+                fg=BG if self._cfg["ontop"] else MUTED)
+
+    # ── Auto-uppdatering (samma mönster som TCISync/jtspots) ──
+
+    def _update_check_tick(self):
+        threading.Thread(target=self._check_for_update, daemon=True).start()
+        self.after(UPDATE_CHECK_MS, self._update_check_tick)
+
+    @staticmethod
+    def _version_tuple(v):
+        v = v.strip().lstrip("vV")
+        parts = []
+        for p in v.split("."):
+            try:
+                parts.append(int(p))
+            except ValueError:
+                break
+        return tuple(parts)
+
+    def _check_for_update(self):
+        # Frågar bara GitHubs "senaste release"-tagg, laddar aldrig ner något
+        # själv. Tyst vid nätverksfel/inget repo/inga releaser än.
+        try:
+            req = urllib.request.Request(UPDATE_CHECK_URL, headers={"User-Agent": "SM5K-Rotor"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.load(r)
+            tag = data.get("tag_name", "")
+            if self._version_tuple(tag) > self._version_tuple(VERSION):
+                self.after(0, lambda t=tag: self._show_update_available(t))
+        except Exception:
+            pass
+
+    def _show_update_available(self, tag):
+        if self._update_available_tag == tag:
+            return
+        self._update_available_tag = tag
+        if self.update_btn is not None:
+            self.update_btn.config(text="Update: %s" % tag)
+            self.update_btn.pack(side="right", padx=(0, 8), pady=2)
+
+    def _launch_updater(self):
+        # Bara meningsfullt i en fryst .exe (se rotor_updater.py), no-op annars
+        # (t.ex. vid `python rotor_gui.py` under utveckling).
+        if not getattr(sys, "frozen", False):
+            return
+        updater = os.path.join(_BASE_DIR, UPDATER_NAME)
+        if not os.path.exists(updater):
+            return
+        try:
+            subprocess.Popen([updater, "--update"], cwd=_BASE_DIR)
+        except Exception:
+            return
+        self._on_close()
+
     # ── Settings ──────────────────────────────────────────
 
     def _open_settings(self):
@@ -683,9 +814,12 @@ class RotorApp(tk.Tk):
         if new_cfg["udp_port"] != self._cfg["udp_port"]:
             self._udp.restart(new_cfg["udp_port"])
         style_changed = new_cfg["ui_mode"] != self._cfg["ui_mode"]
+        ontop_changed = new_cfg["ontop"] != self._cfg["ontop"]
         self._cfg = new_cfg
         self._canvas_size = new_cfg["size"]
         save_settings(new_cfg)
+        if ontop_changed:
+            self.after(0, lambda: self.attributes("-topmost", new_cfg["ontop"]))
         self.after(0, self._rebuild_canvas if style_changed else self._resize_only)
         callback(ok)
 
