@@ -10,6 +10,7 @@ A lightweight Windows GUI for controlling a **WRC Wi-Fi Rotor Controller** (GS-2
 - Live rotor connection status
 - Listens for UDP bearing packets from N1MM / Log4OM / DXLab (auto-rotate on band/spot changes), and honors stop packets from PstRotator-compatible software — see [logging software setup guide](README_ROTOR.md)
 - Automatic stall detection and correction if the rotor overshoots or gets stuck
+- Resizable window — drag any edge and the compass scales to fit; it remembers its size and position between sessions
 - Configurable rotor IP, port, UDP listen port, and window size — no source edits needed
 - Also ships as a standalone CLI script (`rotor.py`) for scripted control
 
@@ -24,16 +25,17 @@ Since the rotor is controlled over the standard **GS-232 protocol**, this should
 ## Requirements
 
 - Windows (tested) — should run anywhere Python + Tkinter is available
-- Python 3.9+ (only needed if running from source; the compiled `.exe` has no dependencies)
+- Python 3.9+ and `pywin32` (only needed if running from source; the compiled `.exe` bundles everything)
 - A WRC Wi-Fi Rotor Controller reachable on your network
 
 ## Running from source
 
 ```
+pip install pywin32
 python rotor_gui.py
 ```
 
-On first run it creates `rotor_settings.json` next to the script with default values. Open the ⚙ settings icon in the app to set your rotor's IP address, port, and the UDP port your logging software sends bearings on.
+On first run it creates `rotor_settings.json` next to the script with default values (or in `%APPDATA%\SM5K-Rotor\` if that folder is read-only). Open the ⚙ settings icon in the app to set your rotor's IP address, port, and the UDP port your logging software sends bearings on.
 
 ## Compiled EXE
 
