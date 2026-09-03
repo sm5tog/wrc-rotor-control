@@ -22,20 +22,62 @@ if getattr(sys, 'frozen', False):
     _BASE_DIR = os.path.dirname(sys.executable)
 else:
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(_BASE_DIR, "rotor_settings.json")
+
+
+def _dir_writable(d):
+    probe = os.path.join(d, ".sm5k_write_test")
+    try:
+        with open(probe, "w"):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _resolve_config_file():
+    """Keep rotor_settings.json next to the program when that folder is
+    writable. If it is not (typically an install under Program Files), fall
+    back to %APPDATA%\\SM5K-Rotor and migrate any existing file once. This
+    stops the rotor IP, window position and size from silently failing to
+    save for those users."""
+    local = os.path.join(_BASE_DIR, "rotor_settings.json")
+    if os.path.exists(local):
+        if _dir_writable(_BASE_DIR):
+            return local
+    elif _dir_writable(_BASE_DIR):
+        return local
+    appdata = os.path.join(os.environ.get("APPDATA", _BASE_DIR), "SM5K-Rotor")
+    try:
+        os.makedirs(appdata, exist_ok=True)
+    except OSError:
+        return local
+    target = os.path.join(appdata, "rotor_settings.json")
+    if os.path.exists(local) and not os.path.exists(target):
+        try:
+            with open(local) as src, open(target, "w") as dst:
+                dst.write(src.read())
+        except OSError:
+            pass
+    return target
+
+
+CONFIG_FILE = _resolve_config_file()
 DEFAULT_HOST     = "192.168.1.1"
 DEFAULT_PORT     = 23
 DEFAULT_UDP_PORT = 12040
 DEFAULT_UI_MODE  = "classic"          # "classic" (windowed, for most users) or "compact" (borderless companion)
 SIZE_BY_MODE = {
-    "classic": {"default": 460, "min": 300},
-    "compact": {"default": 153, "min": 120},
+    "classic": {"default": 460, "min": 50},
+    "compact": {"default": 153, "min": 50},
 }
-MAX_SIZE = 700
+MAX_SIZE = 2000          # only a sanity cap now; classic mode resizes freely
+COMPACT_CEILING = 300    # a size above this belongs to classic, not compact
+TOPBAR_H = 26            # approx height of the classic-mode status bar
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
 HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/master/README_ROTOR.md"
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 # Auto-uppdatering: samma mönster som TCISync/jtspots, releaserna ligger i
 # repots EGEN Releases-flik (sm5tog/wrc-rotor-control), inte i ett separat
@@ -74,17 +116,22 @@ def load_settings():
                 "ontop":    bool(d.get("ontop", True)),
                 "x":        d.get("x"),
                 "y":        d.get("y"),
+                "w":        d.get("w"),
+                "h":        d.get("h"),
             }
     except Exception:
         return {"host": DEFAULT_HOST, "port": DEFAULT_PORT,
                 "udp_port": DEFAULT_UDP_PORT, "ui_mode": DEFAULT_UI_MODE,
                 "size": SIZE_BY_MODE[DEFAULT_UI_MODE]["default"],
                 "ontop": True,
-                "x": None, "y": None}
+                "x": None, "y": None, "w": None, "h": None}
 
 def save_settings(s):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(s, f, indent=2)
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(s, f, indent=2)
+    except OSError:
+        pass
 
 # ── Rotor TCP connection ───────────────────────────────────
 
@@ -263,7 +310,7 @@ class SettingsDialog(tk.Toplevel):
         self.e_host     = row("Rotor IP address",            cfg["host"])
         self.e_port     = row("Rotor TCP port",              cfg["port"])
         self.e_udp_port = row("N1MM UDP listen port",        cfg["udp_port"])
-        self.e_size     = row(f"Compass size ({SIZE_BY_MODE[self.ui_mode]['min']}–{MAX_SIZE} px)", cfg["size"])
+        self.e_size     = row(f"Compass size (min {SIZE_BY_MODE[self.ui_mode]['min']} px, or drag the window edge)", cfg["size"])
         self.lbl_size_hint = self.e_size
 
         chk = tk.Checkbutton(self, text="Always on top", variable=self.var_ontop,
@@ -316,13 +363,16 @@ class SettingsDialog(tk.Toplevel):
                      fg=BG if selected else TEXT,
                      activebackground=AMBER if selected else BORDER)
         if hasattr(self, "lbl_size_hint"):
-            # Nudge the size field toward the new mode's default if it's below its minimum
+            # Reset the size field to the new mode's default when the current
+            # value doesn't fit that mode (a classic-sized window has no place
+            # in compact mode, and vice versa).
             try:
                 cur = int(self.e_size.get().strip())
             except ValueError:
                 cur = 0
-            min_for_mode = SIZE_BY_MODE[mode]["min"]
-            if cur < min_for_mode:
+            lo = SIZE_BY_MODE[mode]["min"]
+            hi = COMPACT_CEILING if mode == "compact" else MAX_SIZE
+            if cur < lo or cur > hi:
                 self.e_size.delete(0, "end")
                 self.e_size.insert(0, str(SIZE_BY_MODE[mode]["default"]))
 
@@ -364,7 +414,6 @@ class RotorApp(tk.Tk):
         super().__init__()
         self.title("SM5K WRC Rotator Control  v%s" % VERSION)
         self.configure(bg=BG)
-        self.resizable(False, False)
 
         self._cfg = load_settings()
         self.rotor = Rotor(self._cfg["host"], self._cfg["port"])
@@ -376,16 +425,20 @@ class RotorApp(tk.Tk):
         self._correction_count = 0    # corrections sent for current target
         self.lbl_conn = None
         self.lbl_n1mm = None
+        self._geom_save_job = None
+        self._redraw_job = None
+        self._last_win_size = (0, 0)
+        self._topbar_h = TOPBAR_H     # refined from the real bar in _build_ui
 
         self._udp = UDPListener(self._cfg["udp_port"], self._on_udp_bearing, self._on_udp_stop)
         self._udp.start()
 
         self._apply_window_style()
         self._build_ui()
-        if self._cfg.get("x") is not None and self._cfg.get("y") is not None:
-            self.geometry(f"+{self._cfg['x']}+{self._cfg['y']}")
+        self._restore_geometry()
         self.attributes("-topmost", self._cfg["ontop"])
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Configure>", self._on_configure)
         self._poll()
         self._update_available_tag = None
         self.after(0, self._update_check_tick)
@@ -395,11 +448,25 @@ class RotorApp(tk.Tk):
     @property
     def _is_compact(self): return self._cfg["ui_mode"] == "compact"
     @property
-    def _cx(self): return self._canvas_size // 2
+    def _cw(self):
+        try:
+            w = self.canvas.winfo_width()
+            return w if w > 1 else self._canvas_size
+        except (AttributeError, tk.TclError):
+            return self._canvas_size
     @property
-    def _cy(self): return self._canvas_size // 2
+    def _ch(self):
+        try:
+            h = self.canvas.winfo_height()
+            return h if h > 1 else self._canvas_size
+        except (AttributeError, tk.TclError):
+            return self._canvas_size
     @property
-    def _radius(self): return int(self._canvas_size * 0.44)
+    def _cx(self): return self._cw // 2
+    @property
+    def _cy(self): return self._ch // 2
+    @property
+    def _radius(self): return int(min(self._cw, self._ch) * 0.44)
     @property
     def _stop_r(self): return max(18, int(self._radius * self.STOP_R_FRAC))
 
@@ -408,7 +475,83 @@ class RotorApp(tk.Tk):
     def _apply_window_style(self):
         # Borderless in compact mode (companion-window style); normal titlebar
         # in classic mode so it behaves like an ordinary desktop app.
-        self.overrideredirect(self._is_compact)
+        compact = self._is_compact
+        self.overrideredirect(compact)
+        # Classic mode resizes freely (the compass follows); compact mode
+        # stays a fixed-size companion window.
+        self.resizable(not compact, not compact)
+        if not compact:
+            self.minsize(SIZE_BY_MODE["classic"]["min"],
+                         SIZE_BY_MODE["classic"]["min"] + self._topbar_h)
+
+    def _restore_geometry(self):
+        cfg = self._cfg
+        if not self._is_compact:
+            w, h = cfg.get("w"), cfg.get("h")
+            if not w or not h:
+                w = self._canvas_size
+                h = self._canvas_size + self._topbar_h
+            w = max(SIZE_BY_MODE["classic"]["min"], int(w))
+            h = max(SIZE_BY_MODE["classic"]["min"] + self._topbar_h, int(h))
+            self.minsize(SIZE_BY_MODE["classic"]["min"],
+                         SIZE_BY_MODE["classic"]["min"] + self._topbar_h)
+            self.geometry(f"{w}x{h}")
+            self._canvas_size = min(w, h - self._topbar_h)
+        x, y = cfg.get("x"), cfg.get("y")
+        if x is not None and y is not None and self._point_on_screen(int(x), int(y)):
+            self.geometry(f"+{int(x)}+{int(y)}")
+
+    @staticmethod
+    def _point_on_screen(x, y):
+        # Reject a saved position that would place the window off every
+        # attached display (e.g. a monitor that is no longer connected).
+        try:
+            import win32api, win32con
+            vx = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
+            vy = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
+            vw = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+            vh = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+            return (vx - 8) <= x <= (vx + vw - 40) and (vy - 8) <= y <= (vy + vh - 40)
+        except Exception:
+            return True
+
+    def _on_configure(self, event):
+        if event.widget is not self:
+            return
+        size = (self.winfo_width(), self.winfo_height())
+        if size != self._last_win_size:
+            self._last_win_size = size
+            if not self._is_compact:
+                if self._redraw_job is not None:
+                    self.after_cancel(self._redraw_job)
+                self._redraw_job = self.after(40, self._redraw_compass)
+        if self._geom_save_job is not None:
+            self.after_cancel(self._geom_save_job)
+        self._geom_save_job = self.after(600, self._save_geometry)
+
+    def _redraw_compass(self):
+        self._redraw_job = None
+        self._canvas_size = min(self._cw, self._ch)
+        self.canvas.delete("all")
+        self._draw_static()
+        self._update_canvas()
+
+    def _save_geometry(self):
+        self._geom_save_job = None
+        try:
+            self._cfg["x"] = self.winfo_x()
+            self._cfg["y"] = self.winfo_y()
+            if not self._is_compact:
+                self._cfg["w"] = self.winfo_width()
+                self._cfg["h"] = self.winfo_height()
+                # Keep "size" in step so the Settings dialog shows the real
+                # current compass size instead of resetting the window.
+                self._cfg["size"] = max(SIZE_BY_MODE["classic"]["min"],
+                                        min(self.winfo_width(),
+                                            self.winfo_height() - self._topbar_h))
+            save_settings(self._cfg)
+        except tk.TclError:
+            pass
 
     # ── Layout ────────────────────────────────────────────
 
@@ -419,6 +562,7 @@ class RotorApp(tk.Tk):
         if not self._is_compact:
             bar = tk.Frame(self, bg=BORDER)
             bar.pack(fill="x")
+            self._bar = bar
 
             self.lbl_conn = tk.Label(bar, text="Rotor: ---", bg=BORDER, fg=MUTED,
                                      font=("Consolas", 9), anchor="w")
@@ -455,10 +599,18 @@ class RotorApp(tk.Tk):
             self.ontop_btn = None
             self.update_btn = None
 
+        if not self._is_compact:
+            self.update_idletasks()
+            self._topbar_h = max(self._bar.winfo_reqheight(), 1)
+
         C = self._canvas_size
         self.canvas = tk.Canvas(self, width=C, height=C, bg=BG,
                                 highlightthickness=0, cursor="crosshair")
-        self.canvas.pack()
+        if self._is_compact:
+            self.canvas.pack()
+        else:
+            # Fill the window so the compass can follow a resize.
+            self.canvas.pack(fill="both", expand=True)
         # Left button: press/drag/release – a plain click sets the target;
         # in compact mode a drag past the threshold moves the borderless window.
         self.canvas.bind("<Button-1>", self._on_press)
@@ -474,7 +626,14 @@ class RotorApp(tk.Tk):
 
     def _rebuild_canvas(self):
         self._apply_window_style()
+        if self._is_compact and not (
+                SIZE_BY_MODE["compact"]["min"] <= self._canvas_size
+                <= COMPACT_CEILING):
+            # Coming from a large classic window — start compact at its default.
+            self._canvas_size = SIZE_BY_MODE["compact"]["default"]
         self._build_ui()
+        if not self._is_compact:
+            self.geometry(f"{self._canvas_size}x{self._canvas_size + self._topbar_h}")
         self._update_canvas()
         if self.az_actual is not None and self.lbl_conn is not None:
             self.lbl_conn.config(text="Rotor: connected", fg=GREEN)
@@ -482,7 +641,7 @@ class RotorApp(tk.Tk):
     # ── Compass rose ──────────────────────────────────────
 
     def _draw_static(self):
-        cx = cy = self._cx
+        cx, cy = self._cx, self._cy
         R = self._radius
         outer     = R
         inner_maj = R - self.TICK_GAP_MAJ
@@ -548,7 +707,7 @@ class RotorApp(tk.Tk):
         return -base if math.sin(rad) > 0 else base
 
     def _needle(self, degrees, color, length_frac, width):
-        cx = cy = self._cx
+        cx, cy = self._cx, self._cy
         rad = math.radians(degrees - 90)
         L = self._radius * length_frac
         return self.canvas.create_line(cx, cy,
@@ -567,7 +726,7 @@ class RotorApp(tk.Tk):
             if item:
                 self.canvas.delete(item)
 
-        cx = cy = self._cx
+        cx, cy = self._cx, self._cy
         R = self._radius
         sr = self._stop_r
         if self._is_compact:
@@ -631,12 +790,10 @@ class RotorApp(tk.Tk):
         if not self._moved:
             self._handle_click(event.x, event.y)
         else:
-            self._cfg["x"] = self.winfo_x()
-            self._cfg["y"] = self.winfo_y()
-            save_settings(self._cfg)
+            self._save_geometry()
 
     def _handle_click(self, x, y):
-        cx = cy = self._cx
+        cx, cy = self._cx, self._cy
         dist = math.hypot(x - cx, y - cy)
         if dist <= self._stop_r:
             self._stop()
@@ -659,9 +816,10 @@ class RotorApp(tk.Tk):
             menu.grab_release()
 
     def _on_close(self):
-        self._cfg["x"] = self.winfo_x()
-        self._cfg["y"] = self.winfo_y()
-        save_settings(self._cfg)
+        for job in (self._geom_save_job, self._redraw_job):
+            if job is not None:
+                self.after_cancel(job)
+        self._save_geometry()
         self.destroy()
 
     # ── Target / stop ─────────────────────────────────────
@@ -824,6 +982,8 @@ class RotorApp(tk.Tk):
         callback(ok)
 
     def _resize_only(self):
+        if not self._is_compact:
+            self.geometry(f"{self._canvas_size}x{self._canvas_size + self._topbar_h}")
         self._build_ui()
         self._update_canvas()
         if self.az_actual is not None and self.lbl_conn is not None:

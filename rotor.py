@@ -4,7 +4,12 @@ import json
 import os
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(_BASE_DIR, "rotor_settings.json")
+_LOCAL_CFG = os.path.join(_BASE_DIR, "rotor_settings.json")
+# rotor_gui.py falls back to %APPDATA%\SM5K-Rotor when its own folder is
+# read-only; follow it so the CLI keeps reading the same file.
+_APPDATA_CFG = os.path.join(os.environ.get("APPDATA", _BASE_DIR),
+                            "SM5K-Rotor", "rotor_settings.json")
+CONFIG_FILE = _LOCAL_CFG if os.path.exists(_LOCAL_CFG) else _APPDATA_CFG
 DEFAULT_HOST = "192.168.1.1"
 DEFAULT_PORT = 23
 TIMEOUT = 5
