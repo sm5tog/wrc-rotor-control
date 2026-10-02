@@ -77,7 +77,7 @@ TOPBAR_H = 26            # approx height of the classic-mode status bar
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=5VX8NE7LQEGF4"
 HELP_URL   = "https://github.com/sm5tog/wrc-rotor-control/blob/master/README_ROTOR.md"
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 # Auto-uppdatering: samma mönster som TCISync/jtspots, releaserna ligger i
 # repots EGEN Releases-flik (sm5tog/wrc-rotor-control), inte i ett separat
@@ -956,6 +956,15 @@ class RotorApp(tk.Tk):
         updater = os.path.join(_BASE_DIR, UPDATER_NAME)
         if not os.path.exists(updater):
             return
+        # En tidigare uppdatering lämnar den nya updatern som <namn>.new
+        # (en körande exe kan inte skrivas över). Nu kör ingen updater, så
+        # bytet görs här innan den startas.
+        pending = updater + ".new"
+        if os.path.exists(pending):
+            try:
+                os.replace(pending, updater)
+            except OSError:
+                pass
         try:
             subprocess.Popen([updater, "--update"], cwd=_BASE_DIR)
         except Exception:
